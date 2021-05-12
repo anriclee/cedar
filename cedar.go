@@ -5,9 +5,10 @@ const (
 	ValueLimit = int(^uint(0) >> 1)
 )
 
+/// Node contains the array of `base` and `check` as specified in the paper: "An efficient implementation of trie structures"
 type node struct {
-	Value int
-	Check int
+	Value int // if it is a negative value, then it stores the value of previous index that is free.
+	Check int // if it is a negative value, then it stores the value of next index that is free.
 }
 
 func (n *node) base() int {
@@ -19,13 +20,23 @@ type nvalue struct {
 	Value interface{}
 }
 
+/// NInfo stores the information about the trie
 type ninfo struct {
-	Sibling, Child byte
-	End            bool
+	Sibling byte // the index of right sibling, it is 0 if it doesn't have a sibling.
+	Child   byte // the index of the first child
+	End     bool
 }
 
+/// Block stores the linked-list pointers and the stats info for blocks.
 type block struct {
-	Prev, Next, Num, Reject, Trial, Ehead int
+	Prev   int // previous block's index
+	Next   int // next block's index
+	Num    int // the number of slots that is free, the range is 0-256
+	Reject int // a heuristic number to make the search for free space faster,
+	// it is the minimum number of iteration in each trie node it has to try before we can conclude that we can reject this block.
+	// If the number of kids for the block we are looking for is less than this number then this block is worthy of searching.
+	Trial int // the number of times this block has been probed by `find_places` for the free block.
+	Ehead int // the index of the first empty element in this block
 }
 
 func (b *block) init() {
@@ -34,8 +45,9 @@ func (b *block) init() {
 }
 
 // Cedar cedar struct
+/// `Cedar` holds all of the information about double array trie.
 type Cedar struct {
-	Array  []node
+	Array  []node // storing the `base` and `check` info from the original paper.
 	Ninfos []ninfo
 	Blocks []block
 	Reject [257]int
@@ -43,12 +55,14 @@ type Cedar struct {
 	vals map[int]nvalue
 	vkey int
 
-	BheadF, BheadC, BheadO int
+	BheadF int // the index of the first 'Full' block, 0 means no 'Full' block
+	BheadC int // the index of the first 'Closed' block, 0 means no ' Closed' block
+	BheadO int // the index of the first 'Open' block, 0 means no 'Open' block
 
 	Capacity int
 	Size     int
 	Ordered  bool
-	MaxTrial int
+	MaxTrial int // the parameter for cedar, it could be tuned for more, but the default is 1.
 }
 
 // New new Cedar
@@ -67,8 +81,10 @@ func New() *Cedar {
 
 	da.Array[0] = node{-2, 0}
 	for i := 1; i < 256; i++ {
+		// make `base` point to the previous element, and make `check` point to the next element
 		da.Array[i] = node{-(i - 1), -(i + 1)}
 	}
+	// make them link as a cyclic doubly-linked list
 	da.Array[1].Value = -255
 	da.Array[255].Check = -1
 
@@ -95,6 +111,7 @@ func (da *Cedar) getV(key []byte, from, pos int) int {
 			to := da.follow(from, 0)
 			da.Array[to].Value = value
 		}
+		// key
 		from = da.follow(from, key[pos])
 	}
 
@@ -121,12 +138,16 @@ func (da *Cedar) vKey() int {
 
 func (da *Cedar) follow(from int, label byte) int {
 	base := da.Array[from].base()
-	to := base ^ int(label)
+	to := base ^ int(label) // 对应状态转移关系： 「base[s]+c=t」，to 代表转移到的状态
 
+	// da.Array[to].Check < 0 : to 位置为空；
+	// base < 0：有 tail 数组？
 	if base < 0 || da.Array[to].Check < 0 {
 		hasChild := false
 		if base >= 0 {
-			hasChild = (da.Array[base^int(da.Ninfos[from].Child)].Check == from)
+			i := base ^ int(da.Ninfos[from].Child)
+			// da.Array[i].Check == from 表示位置 i 处的状态由 from 处转移而来
+			hasChild = da.Array[i].Check == from
 		}
 		to = da.popEnode(base, from, label)
 		da.pushSibling(from, to^int(label), label, hasChild)
@@ -134,6 +155,7 @@ func (da *Cedar) follow(from int, label byte) int {
 		return to
 	}
 
+	// Check 值不为负数，且父状态不是 from，则需要解决冲突
 	if da.Array[to].Check != from {
 		to = da.resolve(from, base, label)
 		return to
@@ -210,17 +232,19 @@ func (da *Cedar) transferBlock(bi int, headIn, headOut *int) {
 }
 
 func (da *Cedar) popEnode(base, from int, label byte) int {
-	e := base ^ int(label)
+	e := base ^ int(label) // to：目的状态
 	if base < 0 {
 		e = da.findPlace()
 	}
 
+	// block index
 	bi := e >> 8
 	n := &da.Array[e]
 	b := &da.Blocks[bi]
 	b.Num--
 
 	if b.Num == 0 {
+		// block 空间耗尽？？
 		if bi != 0 {
 			da.transferBlock(bi, &da.BheadC, &da.BheadF)
 		}
@@ -238,8 +262,10 @@ func (da *Cedar) popEnode(base, from int, label byte) int {
 	}
 
 	n.Value = ValueLimit
+	// 设置父子状态
 	n.Check = from
 	if base < 0 {
+		// 等价于前面计算 base 的方法：n.base() = -(da.Array[from].Value + 1) = e ^ int(label))
 		da.Array[from].Value = -(e ^ int(label)) - 1
 	}
 
@@ -279,7 +305,7 @@ func (da *Cedar) pushEnode(e int) {
 	da.Ninfos[e] = ninfo{}
 }
 
-// hasChild: wherether the `from` node has children
+// hasChild: whether the `from` node has children
 func (da *Cedar) pushSibling(from, base int, label byte, hasChild bool) {
 	c := &da.Ninfos[from].Child
 	keepOrder := *c == 0
@@ -294,6 +320,7 @@ func (da *Cedar) pushSibling(from, base int, label byte, hasChild bool) {
 		}
 	}
 
+	// base^int(label) 貌似是一个转移规则，多次出现
 	da.Ninfos[base^int(label)].Sibling = *c
 	*c = label
 }
@@ -352,6 +379,7 @@ func (da *Cedar) findPlace() int {
 		return da.Blocks[da.BheadO].Ehead
 	}
 
+	// 扩容？？？
 	return da.addBlock() << 8
 }
 

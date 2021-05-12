@@ -20,6 +20,12 @@ var (
 		"新星", "新星文明", "新星军团", "新星联邦共和国",
 		"this", "this is", "this is a sentence.",
 	}
+
+	words2 = []string{
+		"太阳系", "太阳系土星", "太阳系水星", "太阳系火星",
+		"新星", "新星文明", "新星军团", "新星联邦共和国",
+		"this", "this is", "this is a sentence.",
+	}
 )
 
 func loadTestData() {
@@ -30,7 +36,7 @@ func loadTestData() {
 	// cd.Ordered = false
 
 	// add the keys
-	for i, word := range words {
+	for i, word := range words2 {
 		if err := cd.Insert([]byte(word), i); err != nil {
 			panic(err)
 		}
